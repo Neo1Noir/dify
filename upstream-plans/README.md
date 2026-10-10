@@ -5,7 +5,11 @@
 
 - fork：`git@github.com:Neo1Noir/dify.git`（本仓库根目录就是 fork）
 - upstream：`git@github.com:langgenius/dify.git`
-- 本目录是**本地约定目录**，与上游路径无重叠 ⇒ 从 `origin/main` 开 PR 分支时不会带上它（分支请从 `origin/main` 拉，不要从本地 main 拉）
+- 本目录是**本地约定目录**，与上游路径无重叠。⚠️ `origin/main` 也含本目录（随本方案的提交一起 push 上去了），**开 PR 分支必须从 `upstream/main` 拉**，否则会把本目录一起带进 PR：
+  ```bash
+  git fetch upstream
+  git switch -c fix-xxx upstream/main
+  ```
 
 ## 索引
 
@@ -17,7 +21,7 @@
 ## 提交约定（踩过的坑，别重复）
 
 1. **分支一律单段名**（`fix-xxx`），不要 `fix/xxx` —— 沙箱环境下写二级 ref 会「假成功」。
-2. 从 `origin/main` 开 worktree，不要污染本地 main。
+2. 从 `upstream/main` 开 worktree，不要污染本地 main（见上方警告：`origin/main` 含本目录）。
 3. `git config core.autocrlf false` + `.gitattributes eol=lf`，避免 CRLF 噪音。
 4. 🔴 **approve / 进 merge queue 之后绝不能再 push**：会 dismiss approval 并掉出队列。要改就开新 PR。
 5. lint 抑制是**数量基线**（多与少都会失败）；`Skip Duplicate Checks` 同 tree 会跳 job。
