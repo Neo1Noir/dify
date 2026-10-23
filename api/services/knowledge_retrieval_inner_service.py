@@ -12,16 +12,20 @@ prechecks, dataset availability and "no usable document" cases are delegated to
 of a separate validation error.
 """
 
+import base64
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from core.rag.entities.metadata_entities import Condition, MetadataFilteringCondition
 from core.rag.retrieval.dataset_retrieval import DatasetRetrieval
+from core.tools.signature import sign_upload_file_preview_url
 from core.workflow.nodes.knowledge_retrieval.retrieval import KnowledgeRetrievalRequest
+from extensions.ext_storage import storage
 from graphon.model_runtime.utils.encoders import jsonable_encoder
 from graphon.nodes.llm.entities import ModelConfig
-from models.dataset import Dataset
-from models.model import App
+from models.dataset import Dataset, SegmentAttachmentBinding
+from models.model import App, UploadFile
 from services.entities.knowledge_retrieval_inner import (
     InnerKnowledgeRetrieveRequest,
     InnerKnowledgeRetrieveResponse,
@@ -65,6 +69,56 @@ class InnerKnowledgeRetrievalService:
 
         rag = DatasetRetrieval()
         results = rag.knowledge_retrieval(session=session, request=self._to_rag_request(request))
+        # Text/child hits must carry the images bound to their returned parent,
+        # even when the images themselves were not embedded or retrieved.
+        image_files = []
+        with Session(bind=session.get_bind()) as attachment_session:
+            for result in results:
+                metadata = result.metadata
+                if not metadata.segment_id or metadata.dataset_id not in request.dataset_ids:
+                    continue
+                files = (
+                    attachment_session.execute(
+                        select(
+                            UploadFile.id,
+                            UploadFile.name,
+                            UploadFile.mime_type,
+                            UploadFile.extension,
+                            UploadFile.size,
+                            UploadFile.key,
+                        )
+                        .join(SegmentAttachmentBinding, SegmentAttachmentBinding.attachment_id == UploadFile.id)
+                        .where(
+                            UploadFile.tenant_id == request.caller.tenant_id,
+                            SegmentAttachmentBinding.tenant_id == request.caller.tenant_id,
+                            SegmentAttachmentBinding.dataset_id == metadata.dataset_id,
+                            SegmentAttachmentBinding.document_id == metadata.document_id,
+                            SegmentAttachmentBinding.segment_id == metadata.segment_id,
+                            UploadFile.mime_type.in_(("image/jpeg", "image/png", "image/webp", "image/gif")),
+                        )
+                        .order_by(UploadFile.id)
+                    )
+                    .mappings()
+                    .all()
+                )
+                image_files.append((result, files))
+        # Read storage outside the owned DB transaction. Inline bytes work for
+        # private deployments whose signed URLs are unreachable by the model.
+        for result, files in image_files:
+            if files:
+                result.files = [
+                    {
+                        "id": file["id"],
+                        "name": file["name"],
+                        "source": (result.content or result.title)[:2000],
+                        "mime_type": file["mime_type"],
+                        "extension": "." + file["extension"],
+                        "size": file["size"],
+                        "source_url": sign_upload_file_preview_url(file["id"], file["extension"]),
+                        "base64_data": base64.b64encode(storage.load_once(file["key"])).decode("ascii"),
+                    }
+                    for file in files
+                ]
         return InnerKnowledgeRetrieveResponse(
             results=results,
             usage=InnerKnowledgeRetrieveUsage.model_validate(jsonable_encoder(rag.llm_usage)),

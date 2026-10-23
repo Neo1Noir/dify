@@ -10,14 +10,17 @@ Agenton session snapshots can resume without repeating unchanged retrievals.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import base64
 import hashlib
 import json
 import logging
+from dataclasses import dataclass
 from typing import ClassVar, cast
 
 import httpx
+from pydantic import JsonValue
 from pydantic_ai import RunContext, Tool
+from pydantic_ai.messages import BinaryContent, ToolReturn, UserContent
 from pydantic_ai.tools import ToolDefinition
 from typing_extensions import Self, override
 
@@ -124,7 +127,7 @@ class DifyKnowledgeBaseLayer(
         )
         set_by_name = {knowledge_set.name: knowledge_set for knowledge_set in generated_sets}
 
-        async def knowledge_base_search(_ctx: RunContext[object], set_name: str, query: str) -> str:
+        async def knowledge_base_search(_ctx: RunContext[object], set_name: str, query: str) -> str | ToolReturn:
             knowledge_set = set_by_name.get(set_name)
             if knowledge_set is None:
                 return f"unknown knowledge set: {set_name}"
@@ -166,7 +169,7 @@ class DifyKnowledgeBaseLayer(
 
     @property
     @override
-    def user_prompts(self) -> list[str]:
+    def user_prompts(self) -> list[UserContent]:
         """Expose eager user-query results as an additional user prompt."""
         if not self.runtime_state.eager_results:
             return []
@@ -183,7 +186,10 @@ class DifyKnowledgeBaseLayer(
                     ]
                 )
             )
-        return ["Knowledge retrieval results:\n\n" + "\n\n".join(sections)]
+        return [
+            "Knowledge retrieval results:\n\n" + "\n\n".join(sections),
+            *_image_contents([file for result in self.runtime_state.eager_results for file in result.files]),
+        ]
 
     @override
     async def on_context_create(self) -> None:
@@ -279,6 +285,7 @@ class DifyKnowledgeBaseLayer(
                         query=query,
                         observation=_format_observation(response, self.config, include_heading=False),
                         status="success" if response.results else "empty",
+                        files=[file for result in response.results for file in (result.files or [])],
                     )
                 )
 
@@ -293,7 +300,7 @@ class DifyKnowledgeBaseLayer(
         knowledge_set: DifyKnowledgeSetConfig,
         query: str,
         retryable_observation: bool,
-    ) -> str:
+    ) -> str | ToolReturn:
         try:
             response = await client.retrieve(
                 tenant_id=caller["tenant_id"],
@@ -336,7 +343,37 @@ class DifyKnowledgeBaseLayer(
                 exc_info=True,
             )
             raise
-        return _format_observation(response, self.config)
+        observation = _format_observation(response, self.config)
+        images = _image_contents([file for result in response.results for file in (result.files or [])])
+        return ToolReturn(return_value=observation, content=images) if images else observation
+
+
+def _image_contents(files: list[JsonValue]) -> list[UserContent]:
+    """Decode trusted inner-API images without asking the model to fetch URLs."""
+    images: list[UserContent] = []
+    seen: set[str] = set()
+    for file in files:
+        if not isinstance(file, dict):
+            continue
+        file_id, mime_type, data = file.get("id"), file.get("mime_type"), file.get("base64_data")
+        if (
+            not isinstance(file_id, str)
+            or file_id in seen
+            or not isinstance(mime_type, str)
+            or mime_type not in ("image/jpeg", "image/png", "image/webp", "image/gif")
+            or not isinstance(data, str)
+        ):
+            continue
+        source = file.get("source")
+        if isinstance(source, str) and source:
+            images.append("Retrieved image attachment from this knowledge segment:\n" + source)
+        images.append(
+            BinaryContent(
+                data=base64.b64decode(data, validate=True), media_type=mime_type, vendor_metadata={"detail": "high"}
+            )
+        )
+        seen.add(file_id)
+    return images
 
 
 def _build_caller_context(execution_context: object) -> dict[str, str]:

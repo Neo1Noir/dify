@@ -234,6 +234,7 @@ class DifyKnowledgeEagerResult(BaseModel):
     query: str
     observation: str
     status: Literal["success", "empty", "temporarily_unavailable"]
+    files: list[JsonValue] = Field(default_factory=list)
 
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
 
