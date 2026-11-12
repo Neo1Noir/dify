@@ -24,6 +24,7 @@ from urllib.parse import urlparse
 import httpx
 from pydantic import BaseModel, ConfigDict, JsonValue, ValidationError
 from pydantic_ai import RunContext, Tool
+from pydantic_ai.messages import BinaryContent, ToolReturn
 from pydantic_ai.tools import ToolDefinition
 from typing_extensions import Self, override
 
@@ -259,7 +260,7 @@ def _build_pydantic_ai_tool(
     tool_description = tool_config.description or tool_name
     tool_schema = deepcopy(tool_config.parameters_json_schema)
 
-    async def invoke_tool(_ctx: RunContext[object], **tool_arguments: object) -> str:
+    async def invoke_tool(_ctx: RunContext[object], **tool_arguments: object) -> str | ToolReturn:
         try:
             merged_arguments = await _prepare_tool_arguments(
                 effective_parameters,
@@ -274,7 +275,21 @@ def _build_pydantic_ai_tool(
                 credentials=dict(tool_config.credentials),
                 tool_parameters=merged_arguments,
             )
-            return _convert_tool_response_to_text(messages)
+            images: list[BinaryContent] = []
+            observation_messages: list[DifyPluginToolInvokeMessage] = []
+            for message in messages:
+                mime_type = (message.meta or {}).get("mime_type")
+                if (message.type is DifyPluginToolInvokeMessage.MessageType.BLOB
+                        and (message.meta or {}).get("agent_image") is True
+                        and isinstance(message.message, DifyPluginToolInvokeMessage.BlobMessage)
+                        and message.message.blob
+                        and mime_type in ("image/jpeg", "image/png", "image/webp", "image/gif")):
+                    images.append(BinaryContent(data=message.message.blob, media_type=mime_type,
+                        vendor_metadata={"detail": "high"}))
+                else:
+                    observation_messages.append(message)
+            observation = _convert_tool_response_to_text(observation_messages)
+            return ToolReturn(return_value=observation, content=images) if images else observation
         except DifyPluginToolClientError as exc:
             return _tool_error_text(tool_name=tool_name, error=exc)
         except ValueError as exc:
