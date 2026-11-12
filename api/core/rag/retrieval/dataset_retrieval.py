@@ -193,6 +193,10 @@ class DatasetRetrieval:
                 inputs={},
             )
 
+        # Caller validation and metadata filtering are read-only. Release
+        # their connection before waiting for retrieval and model calls.
+        session.close()
+
         if request.retrieval_mode == DatasetRetrieveConfigEntity.RetrieveStrategy.SINGLE:
             planning_strategy = PlanningStrategy.REACT_ROUTER
             # Ensure required fields are not None for single retrieval mode
@@ -1163,6 +1167,9 @@ class DatasetRetrieval:
         with flask_app.app_context():
             dataset_stmt = select(Dataset).where(Dataset.id == dataset_id)
             dataset = session.scalar(dataset_stmt)
+            # This worker owns a read-only session; the loaded configuration
+            # remains available after returning its connection to the pool.
+            session.close()
 
             if not dataset:
                 return []

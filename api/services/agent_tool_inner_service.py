@@ -56,6 +56,10 @@ class AgentToolInnerService:
                 status_code=403,
             )
 
+        # Caller validation is read-only; release its connection before tools
+        # perform nested API/database calls or wait for a workflow to finish.
+        session.close()
+
         agent_tool = AgentToolEntity(
             provider_type=ToolProviderType.value_of(request.tool.provider_type),
             provider_id=request.tool.provider_id,

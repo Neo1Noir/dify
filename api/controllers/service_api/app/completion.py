@@ -430,6 +430,11 @@ class ChatApi(Resource):
                 streaming=streaming,
             )
 
+            if app_mode == AppMode.AGENT:
+                # Auth uses the scoped session; do not hold its read transaction
+                # for the lifetime of the Agent SSE response.
+                db.session.close()
+
             # response-contract:ignore compact_generate_response
             return helper.compact_generate_response(response)
         except WorkflowNotFoundError as ex:
