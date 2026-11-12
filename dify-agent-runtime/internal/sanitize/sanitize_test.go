@@ -81,3 +81,32 @@ func TestInvalidUTF8(t *testing.T) {
 		t.Errorf("got %q, want %q", string(out), expected)
 	}
 }
+
+func TestUTF8AcrossEveryByteBoundary(t *testing.T) {
+	input := []byte("技能：不给危险操作步骤。🙂\r\n\x1b[31m红色\x1b[0m\n")
+	for split := 0; split <= len(input); split++ {
+		s := New()
+		out := s.Feed(input[:split])
+		out = append(out, s.Feed(input[split:])...)
+		out = append(out, s.Flush()...)
+		if string(out) != "技能：不给危险操作步骤。🙂\n红色\n" {
+			t.Fatalf("split %d corrupted UTF-8: %q", split, out)
+		}
+	}
+}
+
+func TestUTF8ByteAtATimeAndTruncatedEnd(t *testing.T) {
+	s := New()
+	var out []byte
+	for _, b := range []byte("中文🙂") {
+		out = append(out, s.Feed([]byte{b})...)
+	}
+	out = append(out, s.Feed([]byte{0xe4, 0xb8})...)
+	out = append(out, s.Flush()...)
+	if string(out) != "中文🙂\uFFFD" {
+		t.Fatalf("got %q", out)
+	}
+	if len(s.Flush()) != 0 {
+		t.Fatal("second flush must not repeat the incomplete rune")
+	}
+}
